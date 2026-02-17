@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LED Selector (Activation + Tap-to-Cycle + Hold-to-Confirm)</title>
+<style>
+  :root{
+    --bg:#111; --panel:#1e1e1e; --text:#e6e6e6; --muted:#9aa0a6;
+    --led-off:#2b2b2b; --outline:#101010;
+  }
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  .wrap{max-width:820px;margin:2rem auto;padding:1rem}
+  .card{background:var(--panel);border-radius:12px;padding:16px;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+  .row{display:flex;gap:16px;align-items:center}
+  .led{width:90px;height:90px;border-radius:50%;background:var(--led-off);
+       border:2px solid var(--outline);box-shadow:inset 0 0 10px rgba(0,0,0,.6);
+       transition:background-color .12s linear, opacity .1s linear}
+  button{background:#2d6cdf;color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:15px;cursor:pointer}
+  button:active{transform:translateY(1px)}
+  textarea{width:100%;height:220px;background:#121212;color:#d7d7d7;border:1px solid #2a2a2a;border-radius:8px;
+           padding:10px;resize:vertical}
+  .muted{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LED Selector (GitHub Pages – Browser Version)</h1>
+  <div class="card">
+    <div class="row">
+      <div id="led" class="led" aria-label="LED"></div>
+      <button id="btn" aria-label="Control Button">Button</button>
+    </div>
+    <p class="muted" id="hint"></p>
+    <textarea id="log" readonly></textarea>
+  </div>
+</div>
+
+<script>
+/* ===========================
+ *  Timings / behavior
+ * =========================== */
+const HOLD_MS = 5_000;          // >= 5s: enter activation (from idle/final) OR confirm (from activation)
+const FAST_BLINK_MS = 100;      // fast blink in activation
+const CLICK_MAX_MS = 600;       // < 600ms considered a "short press" (tap) to cycle colors
+const COLORS = ["red","green","yellow"];
+
+/* ===========================
+ *  Elements
+ * =========================== */
+const ledEl  = document.getElementById('led');
+const btnEl  = document.getElementById('btn');
+const logEl  = document.getElementById('log');
+const hintEl = document.getElementById('hint');
+
+/* ===========================
+ *  State
+ * =========================== */
+let state = "idle";  // "idle" | "activation" | "final"
+let activationColor = localStorage.getItem('activationColor') || "red";
+
+let pressing = false;
+let pressStart = 0;
+let holdPoll = null;
+let holdTriggered = false;   // becomes true if this press caused a hold action
+
+let blinkTimer = null;
+let ledOn = false;
+
+/* ===========================
+ *  Helpers
+ * =========================== */
+function log(msg){
+  const ts = new Date().toLocaleTimeString();
+  logEl.value += `[${ts}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setLED(color){
+  stopBlink();
+  ledEl.style.background = color;
+}
+function setLEDOff(){
+  stopBlink();
+  ledEl.style.background = getComputedStyle(document.documentElement).getPropertyValue('--led-off');
+}
+function blink(color, intervalMs){
+  stopBlink();
+  ledOn = false;
+  const off = getComputedStyle(document.documentElement).getPropertyValue('--led-off');
+  ledEl.style.background = off;
+  blinkTimer = setInterval(()=>{
+    ledOn = !ledOn;
+    ledEl.style.background = ledOn ? color : off;
+  }, intervalMs);
+}
+function stopBlink(){
+  if (blinkTimer){ clearInterval(blinkTimer); blinkTimer = null; }
+}
+function updateHint(){
+  hintEl.textContent =
+    `Hold ${HOLD_MS/1000}s to activate (fast‑blink ${activationColor}). `
+    + `While activated: short press to cycle (Red → Green → Yellow → …). `
+    + `Hold ${HOLD_MS/1000}s again to confirm the current color and exit.`;
+}
+
+/* ===========================
+ *  State transitions
+ * =========================== */
+function enterActivation(){
+  state = "activation";
+  blink(activationColor, FAST_BLINK_MS);
+  log(`Activated: fast blinking ${activationColor}. Short press cycles; hold ${HOLD_MS/1000}s to confirm.`);
+}
+function confirmAndExit(){
+  // The currently "selected" color is the one blinking ON right now.
+  // We want the logical color being shown (not the off state):
+  // The blink color is exactly the current activationColor at all times.
+  stopBlink();
+  state = "final";
+  setLED(activationColor);
+  localStorage.setItem('activationColor', activationColor);
+  log(`Confirmed: set solid ${activationColor}. This is the preferred color next time.`);
+  updateHint();
+}
+function cycleToNext(){
+  const idx = COLORS.indexOf(activationColor);
+  const next = COLORS[(idx + 1) % COLORS.length];
+  activationColor = next;
+  // keep blinking with the new color
+  blink(activationColor, FAST_BLINK_MS);
+  log(`Cycled to ${activationColor}.`);
+}
+
+/* ===========================
+ *  Hold polling per press
+ * =========================== */
+function startHoldPolling(){
+  const tick = ()=>{
+    if (!pressing) return;
+    const elapsed = performance.now() - pressStart;
+    if (elapsed >= HOLD_MS){
+      holdTriggered = true;
+      if (state === "idle" || state === "final"){
+        enterActivation();
+      } else if (state === "activation"){
+        confirmAndExit();
+      }
+      return; // stop polling for this press
+    }
+    holdPoll = setTimeout(tick, 100);
+  };
+  tick();
+}
+function stopHoldPolling(){
+  if (holdPoll){ clearTimeout(holdPoll); holdPoll = null; }
+}
+
+/* ===========================
+ *  Button events
+ * =========================== */
+btnEl.addEventListener('mousedown', ()=>{
+  if (pressing) return;
+  pressing = true;
+  pressStart = performance.now();
+  holdTriggered = false;
+  log(`Pressed (state=${state}).`);
+  startHoldPolling();
+});
+
+btnEl.addEventListener('mouseup', ()=>{
+  if (!pressing) return;
+  pressing = false;
+  const elapsedMs = performance.now() - pressStart;
+  stopHoldPolling();
+  log(`Released after ${(elapsedMs/1000).toFixed(2)}s (state=${state}).`);
+
+  // If a hold action triggered on this same press, don't treat it as a short press.
+  if (holdTriggered) return;
+
+  // Short press behavior
+  if (elapsedMs < CLICK_MAX_MS){
+    if (state === "activation"){
+      cycleToNext();
+    } // else ignore short press in idle/final
+  }
+});
+
+/* ===========================
+ *  Init
+ * =========================== */
+updateHint();
+log("Ready.");
+if (state === "idle"){
+  // Show last chosen color solid (or off if you prefer)
+  setLED(activationColor); // change to setLEDOff() if you'd rather show off by default
+}
+</script>
+</body>
+</html>
