@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Two-Button Controller Demo (Power + Menu with LED)</title>
+  <title>Two-Button Controller Demo (Power + Menu with LED) — Fixed Handlers</title>
   <style>
     :root {
       --bg: #0f172a;          /* slate-900 */
@@ -17,9 +17,6 @@
 
       --led-off: #0b1022;     /* very dark */
       --led-border: #1f2937;  /* gray-800 */
-
-      --fast-period-ms: 166.67;  /* ~6 Hz */
-      --slow-period-ms: 666.67;  /* ~1.5 Hz */
     }
 
     * { box-sizing: border-box; }
@@ -157,7 +154,7 @@
           <li><strong>Power:</strong> Short press toggles Off ↔ On. On power-up, LED <em>fast-blinks</em> in preferred color for <strong>10 blinks</strong>, then goes <strong>solid Green</strong> (run).</li>
           <li><strong>Menu entry (Run only):</strong> Hold <strong>≥ 5s</strong>. LED <em>slow-blinks</em> candidate color; short-press cycles <strong>Red → Green → Yellow → Red</strong>.</li>
           <li><strong>Confirm selection:</strong> Long-press (≥ 1s) → LED <em>fast-blinks 10 times</em> in chosen color, then exit menu to <strong>solid Green</strong>. Preferred color is updated <em>after</em> those 10 blinks complete.</li>
-          <li><strong>Preview (Run):</strong> Short-press Menu briefly to <em>check preferred color</em> (2 slow blinks), then return to solid Green.</li>
+          <li><strong>Preview (Run):</strong> Short-press Menu to <em>check preferred color</em> (2 slow blinks), then return to solid Green.</li>
           <li><strong>Power during menu:</strong> powers Off immediately, aborts menu/confirm, and <em>does not change</em> the preferred color.</li>
           <li><strong>Persistence:</strong> Preferred color persists across reloads (localStorage). Default on first run: <strong>Red</strong>.</li>
         </ul>
@@ -170,23 +167,18 @@
     </section>
 
     <footer>
-      Blink rates: fast ≈ 6&nbsp;Hz (period ≈ 166.7&nbsp;ms), slow ≈ 1.5&nbsp;Hz (period ≈ 666.7&nbsp;ms). Timing uses setInterval / rAF; slight jitter is expected.
+      Blink rates: fast ≈ 6&nbsp;Hz (period ≈ 166.7&nbsp;ms), slow ≈ 1.5&nbsp;Hz (period ≈ 666.7&nbsp;ms). Timing uses setInterval; slight jitter is expected.
     </footer>
   </main>
 
   <script>
     // =============================
-    //  Utility & Constants
+    //  Constants
     // =============================
     const COLORS = ["Red", "Green", "Yellow"]; // cycling order
-    const HEX = {
-      Red:    "#ef4444",
-      Green:  "#22c55e",
-      Yellow: "#f59e0b",
-    };
+    const HEX = { Red: "#ef4444", Green: "#22c55e", Yellow: "#f59e0b" };
     const SLOW_PERIOD = 666.67; // ms ~1.5 Hz
     const FAST_PERIOD = 166.67; // ms ~6 Hz
-
     const MENU_ENTER_HOLD_MS = 5000; // ≥ 5s to enter menu
     const MENU_CONFIRM_HOLD_MS = 1000; // ≥ 1s to confirm selection
 
@@ -199,11 +191,9 @@
     const modeStateEl = document.getElementById('modeState');
     const prefColorLabelEl = document.getElementById('prefColorLabel');
     const candColorLabelEl = document.getElementById('candColorLabel');
-
     const btnPower = document.getElementById('btnPower');
     const btnMenu = document.getElementById('btnMenu');
     const menuHintEl = document.getElementById('menuHint');
-
     const logEl = document.getElementById('log');
 
     const powerProgress = btnPower.querySelector('.progress > span');
@@ -215,331 +205,148 @@
     }
 
     // =============================
-    //  State Machine
+    //  State
     // =============================
-    const State = Object.freeze({
-      OFF: 'off',
-      BOOT: 'boot',
-      RUN: 'run',
-      MENU: 'menu',
-      CONFIRM: 'confirm',
-      PREVIEW: 'preview',
-    });
-
+    const State = Object.freeze({ OFF:'off', BOOT:'boot', RUN:'run', MENU:'menu', CONFIRM:'confirm', PREVIEW:'preview' });
     let powerOn = false;
     let mode = State.OFF;
-
     let preferredColor = (localStorage.getItem('preferredColor') || 'Red');
-    prefColorLabelEl.textContent = preferredColor;
-
-    // Menu-specific
     let candIndex = COLORS.indexOf(preferredColor);
     let candColor = COLORS[candIndex];
 
     // Blink engine
-    let blinkTimer = null;       // setInterval id
-    let blinkHalfPeriod = FAST_PERIOD / 2; // will be replaced per mode
-    let ledPhaseOn = false;      // toggles every half-period
-    let blinkCyclesRemaining = null; // number of full on->off cycles left (null = infinite)
-    let blinkColor = null;       // current blink color (hex string)
+    let blinkTimer = null;
+    let blinkHalfPeriod = FAST_PERIOD/2;
+    let ledPhaseOn = false;
+    let blinkCyclesRemaining = null; // full on->off cycles remaining; null=infinite
+    let blinkColor = null;
 
-    function setLED(colorHex, on = true) {
-      // When off, we dim to near-black; when on, we show color
+    // =============================
+    //  Helpers
+    // =============================
+    function setLED(colorHex, on=true){
       ledEl.style.background = on ? colorHex : 'var(--led-off)';
-      ledEl.style.boxShadow = on
-        ? `0 0 24px ${colorHex}66, inset 0 0 30px ${colorHex}55`
-        : '0 0 0 rgba(0,0,0,0)';
+      ledEl.style.boxShadow = on ? `0 0 24px ${colorHex}66, inset 0 0 30px ${colorHex}55` : '0 0 0 transparent';
     }
-
-    function updateLabels() {
+    function setLEDStatusLabel(text){ ledStatusEl.textContent = text; }
+    function updateLabels(){
       powerStateEl.textContent = powerOn ? 'On' : 'Off';
       modeStateEl.textContent = mode;
       prefColorLabelEl.textContent = preferredColor;
       candColorLabelEl.textContent = (mode === State.MENU) ? candColor : '—';
     }
-
-    function setLEDStatusLabel(text) {
-      ledStatusEl.textContent = text;
+    function clearBlink(){
+      if (blinkTimer){ clearInterval(blinkTimer); blinkTimer=null; }
+      blinkHalfPeriod = FAST_PERIOD/2; ledPhaseOn=false; blinkCyclesRemaining=null; blinkColor=null;
     }
-
-    function clearBlink() {
-      if (blinkTimer) {
-        clearInterval(blinkTimer);
-        blinkTimer = null;
-      }
-      blinkHalfPeriod = FAST_PERIOD/2;
-      ledPhaseOn = false;
-      blinkCyclesRemaining = null;
-      blinkColor = null;
-    }
-
-    function startBlink({ speed, color, cycles = null, onDone = null, labelPrefix = 'Blinking' }) {
-      // speed: 'fast' | 'slow'
+    function startBlink({speed, color, cycles=null, onDone=null, labelPrefix='Blinking'}){
       clearBlink();
-      blinkHalfPeriod = (speed === 'fast' ? FAST_PERIOD : SLOW_PERIOD) / 2;
+      blinkHalfPeriod = (speed==='fast'?FAST_PERIOD:SLOW_PERIOD)/2;
       blinkColor = HEX[color];
-      ledPhaseOn = false; // start dark
-      blinkCyclesRemaining = (typeof cycles === 'number' ? cycles : null);
-
-      setLEDStatusLabel(`${labelPrefix} ${color} ${speed === 'fast' ? '(fast)' : '(slow)'}${cycles ? ` — ${cycles} left` : ''}`);
-
-      let halfToggleCount = 0; // count half-period toggles; every 2 toggles = 1 full blink cycle
-
-      setLED(blinkColor, false);
-
-      blinkTimer = setInterval(() => {
+      ledPhaseOn = false;
+      blinkCyclesRemaining = (typeof cycles==='number')? cycles : null;
+      setLEDStatusLabel(`${labelPrefix} ${color} ${speed==='fast'?'(fast)':'(slow)'}${cycles?` — ${cycles} left`:''}`);
+      setLED(blinkColor,false);
+      let halfCount=0;
+      blinkTimer = setInterval(()=>{
         ledPhaseOn = !ledPhaseOn;
         setLED(blinkColor, ledPhaseOn);
-        halfToggleCount++;
-
-        if (halfToggleCount % 2 === 0) {
-          // completed one on->off cycle
-          if (blinkCyclesRemaining !== null) {
-            blinkCyclesRemaining--;
-            setLEDStatusLabel(`${labelPrefix} ${color} ${speed === 'fast' ? '(fast)' : '(slow)'} — ${blinkCyclesRemaining} left`);
-            if (blinkCyclesRemaining <= 0) {
-              clearBlink();
-              if (onDone) onDone();
-            }
-          }
+        halfCount++;
+        if (halfCount%2===0 && blinkCyclesRemaining!==null){
+          blinkCyclesRemaining--; setLEDStatusLabel(`${labelPrefix} ${color} ${speed==='fast'?'(fast)':'(slow)'} — ${blinkCyclesRemaining} left`);
+          if (blinkCyclesRemaining<=0){ clearBlink(); if(onDone) onDone(); }
         }
       }, blinkHalfPeriod);
     }
 
-    function enterRun() {
-      mode = State.RUN;
-      setLED(HEX.Green, true);
-      setLEDStatusLabel('Solid Green (run)');
-      updateLabels();
-      menuHintEl.textContent = 'Hold 5s to enter menu (when On)';
+    function enterRun(){
+      mode = State.RUN; setLED(HEX.Green,true); setLEDStatusLabel('Solid Green (run)'); updateLabels();
+      menuHintEl.textContent = 'Short: preview | Hold ≥5s: enter menu';
+    }
+    function powerOnSequence(){
+      mode = State.BOOT; updateLabels();
+      startBlink({speed:'fast', color:preferredColor, cycles:10, labelPrefix:'Boot blink', onDone:()=>{ enterRun(); log('Boot complete → Run'); }});
+      log(`Power On → Boot blink (fast x10) in ${preferredColor}`);
+    }
+    function powerToggle(){
+      if (!powerOn){ powerOn=true; mode=State.BOOT; updateLabels(); powerOnSequence(); }
+      else { powerOn=false; clearBlink(); mode=State.OFF; setLED(HEX.Green,false); setLEDStatusLabel('Off'); updateLabels(); log('Power Off'); }
     }
 
-    function powerOnSequence() {
-      // Boot blink: fast in preferred color for exactly 10 blinks, then solid green (run)
-      mode = State.BOOT;
-      updateLabels();
-      startBlink({
-        speed: 'fast',
-        color: preferredColor,
-        cycles: 10,
-        labelPrefix: 'Boot blink',
-        onDone: () => {
-          enterRun();
-          log(`Boot complete → Run (solid Green)`);
-        }
-      });
-      log(`Power On → Boot blink (fast, 10) in preferred color: ${preferredColor}`);
-    }
-
-    function powerToggle() {
-      if (!powerOn) {
-        // Turning On
-        powerOn = true;
-        mode = State.BOOT;
-        updateLabels();
-        powerOnSequence();
-      } else {
-        // Turning Off
-        powerOn = false;
-        clearBlink();
-        mode = State.OFF;
-        setLED(HEX.Green, false); // LED off
-        setLEDStatusLabel('Off');
-        updateLabels();
-        log('Power Off');
-      }
-    }
-
-    function cycleCandidate() {
-      candIndex = (candIndex + 1) % COLORS.length;
-      candColor = COLORS[candIndex];
-      startBlink({ speed: 'slow', color: candColor, labelPrefix: 'Menu: blinking', cycles: null });
-      updateLabels();
-      log(`Menu: cycle → ${candColor}`);
-    }
-
-    function enterMenu() {
-      if (!powerOn || mode !== State.RUN) return; // only from Run
-      mode = State.MENU;
-      candIndex = COLORS.indexOf(preferredColor);
-      candColor = COLORS[candIndex];
-      startBlink({ speed: 'slow', color: candColor, labelPrefix: 'Menu: blinking', cycles: null });
-      updateLabels();
-      menuHintEl.textContent = 'Short: cycle | Hold ≥1s: confirm';
+    function enterMenu(){
+      if (!powerOn || mode!==State.RUN) return;
+      mode = State.MENU; candIndex = COLORS.indexOf(preferredColor); candColor = COLORS[candIndex];
+      startBlink({speed:'slow', color:candColor, labelPrefix:'Menu:'});
+      updateLabels(); menuHintEl.textContent='Short: cycle | Hold ≥1s: confirm';
       log(`Enter Menu (candidate: ${candColor})`);
     }
-
-    function abortMenuToOff() {
-      clearBlink();
-      mode = State.OFF;
-      powerOn = false;
-      setLED(HEX.Green, false);
-      setLEDStatusLabel('Off');
-      updateLabels();
-      menuHintEl.textContent = 'Hold 5s to enter menu (when On)';
-      log('Power Off while in Menu → changes discarded');
+    function cycleCandidate(){
+      candIndex = (candIndex+1)%COLORS.length; candColor = COLORS[candIndex];
+      startBlink({speed:'slow', color:candColor, labelPrefix:'Menu:'}); updateLabels();
+      log(`Menu: cycle → ${candColor}`);
     }
-
-    function confirmSelection() {
-      if (mode !== State.MENU) return;
-      const newColor = COLORS[candIndex];
-      mode = State.CONFIRM;
-      updateLabels();
-      // Do NOT persist yet; only after the 10 fast blinks complete (allows power-off to cancel change)
-      startBlink({
-        speed: 'fast',
-        color: newColor,
-        cycles: 10,
-        labelPrefix: 'Confirm: blinking',
-        onDone: () => {
-          // Commit preferred color AFTER successful confirm blinks
-          preferredColor = newColor;
-          localStorage.setItem('preferredColor', preferredColor);
-          prefColorLabelEl.textContent = preferredColor;
-          log(`Confirmed preferred color → ${preferredColor}`);
-          enterRun();
-        }
-      });
-      log(`Confirm requested for ${newColor} → fast blink x10, then commit`);
+    function confirmSelection(){
+      if (mode!==State.MENU) return; const newColor = COLORS[candIndex]; mode=State.CONFIRM; updateLabels();
+      startBlink({speed:'fast', color:newColor, cycles:10, labelPrefix:'Confirm:', onDone:()=>{
+        preferredColor = newColor; localStorage.setItem('preferredColor', preferredColor);
+        prefColorLabelEl.textContent = preferredColor; log(`Confirmed preferred color → ${preferredColor}`); enterRun();
+      }});
+      log(`Confirm requested for ${newColor} (fast x10 then commit)`);
     }
-
-    function previewPreferred() {
-      if (!powerOn || mode !== State.RUN) return;
-      mode = State.PREVIEW;
-      updateLabels();
-      startBlink({
-        speed: 'slow',
-        color: preferredColor,
-        cycles: 2, // two slow blinks
-        labelPrefix: 'Preview:',
-        onDone: () => {
-          enterRun();
-          log('Preview done → back to Run');
-        }
-      });
+    function abortMenuToOff(){
+      clearBlink(); mode=State.OFF; powerOn=false; setLED(HEX.Green,false); setLEDStatusLabel('Off'); updateLabels(); menuHintEl.textContent='Hold 5s to enter menu (when On)';
+      log('Power Off while in Menu/Confirm → changes discarded');
+    }
+    function previewPreferred(){
+      if (!powerOn || mode!==State.RUN) return; mode=State.PREVIEW; updateLabels();
+      startBlink({speed:'slow', color:preferredColor, cycles:2, labelPrefix:'Preview:', onDone:()=>{ enterRun(); log('Preview done → Run'); }});
       log(`Preview preferred color → ${preferredColor} (2 slow blinks)`);
     }
 
     // =============================
-    //  Input Handling (Pointer-based)
+    //  Unified Menu Button Handlers (no cloning)
     // =============================
-    function attachPressHandlers(buttonEl, { onShort, onLong, longMs, progressEl }) {
-      let downTime = 0;
-      let holdTimer = null;
-      let rafId = null;
-      let longTriggered = false;
-
-      const reset = () => {
-        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        longTriggered = false;
-        if (progressEl) progressEl.style.width = '0%';
-        downTime = 0;
-      };
-
-      function updateProgress() {
-        if (!downTime || !longMs) return;
-        const elapsed = performance.now() - downTime;
-        const pct = Math.min(100, Math.round((elapsed / longMs) * 100));
-        progressEl.style.width = pct + '%';
-        if (elapsed < longMs && !longTriggered) {
-          rafId = requestAnimationFrame(updateProgress);
-        }
+    (function attachMenuHandlers(){
+      let downTime=0, holdTimer=null, rafId=null, longTriggered=false;
+      function reset(){ if(holdTimer){clearTimeout(holdTimer);holdTimer=null;} if(rafId){cancelAnimationFrame(rafId);rafId=null;} longTriggered=false; menuProgress.style.width='0%'; downTime=0; }
+      function context(){
+        if (powerOn && mode===State.RUN) return {onShort:previewPreferred, onLong:enterMenu, longMs:MENU_ENTER_HOLD_MS, hint:'Short: preview | Hold ≥5s: enter menu'};
+        if (powerOn && mode===State.MENU) return {onShort:cycleCandidate, onLong:confirmSelection, longMs:MENU_CONFIRM_HOLD_MS, hint:'Short: cycle | Hold ≥1s: confirm'};
+        return {onShort:()=>{}, onLong:null, longMs:null, hint:'Hold 5s to enter menu (when On)'};
       }
+      function updateProgress(){
+        const ctx = context(); if (!downTime || !ctx.longMs) return;
+        const elapsed = performance.now() - downTime; const pct = Math.min(100, Math.round((elapsed/ctx.longMs)*100));
+        menuProgress.style.width = pct + '%';
+        if (elapsed < ctx.longMs && !longTriggered) { rafId = requestAnimationFrame(updateProgress); }
+      }
+      btnMenu.addEventListener('pointerdown', (e)=>{
+        e.preventDefault(); btnMenu.setPointerCapture?.(e.pointerId); const ctx=context(); menuHintEl.textContent=ctx.hint;
+        if (ctx.longMs){ downTime=performance.now(); updateProgress(); holdTimer=setTimeout(()=>{ longTriggered=true; if(ctx.onLong) ctx.onLong(); }, ctx.longMs); }
+      });
+      btnMenu.addEventListener('pointerup', (e)=>{
+        e.preventDefault(); btnMenu.releasePointerCapture?.(e.pointerId); const wasLong=longTriggered; const ctx=context(); reset(); if(!wasLong && ctx.onShort) ctx.onShort(); menuHintEl.textContent=ctx.hint;
+      });
+      btnMenu.addEventListener('pointercancel', reset);
+      btnMenu.addEventListener('click', (e)=> e.preventDefault());
+    })();
 
-      const onPointerDown = (e) => {
+    // Power button (simple):
+    (function attachPowerHandler(){
+      btnPower.addEventListener('click', (e)=> e.preventDefault());
+      btnPower.addEventListener('pointerdown', (e)=>{ e.preventDefault(); });
+      btnPower.addEventListener('pointerup', (e)=>{
         e.preventDefault();
-        buttonEl.setPointerCapture?.(e.pointerId);
-        if (longMs) {
-          downTime = performance.now();
-          updateProgress();
-          holdTimer = setTimeout(() => {
-            longTriggered = true;
-            if (onLong) onLong();
-          }, longMs);
-        }
-      };
-
-      const onPointerUp = (e) => {
-        e.preventDefault();
-        buttonEl.releasePointerCapture?.(e.pointerId);
-        const wasLong = longTriggered;
-        reset();
-        if (!wasLong && onShort) onShort();
-      };
-
-      const onPointerCancel = () => reset();
-
-      buttonEl.addEventListener('pointerdown', onPointerDown);
-      buttonEl.addEventListener('pointerup', onPointerUp);
-      buttonEl.addEventListener('pointercancel', onPointerCancel);
-      // Prevent stray click events
-      buttonEl.addEventListener('click', (e) => e.preventDefault());
-    }
-
-    // Power: short press toggles. No long-press behavior. Progress bar unused.
-    attachPressHandlers(btnPower, {
-      onShort: () => {
-        // If in MENU or CONFIRM states, power off aborts selection without persisting
-        if (mode === State.MENU || mode === State.CONFIRM) {
-          abortMenuToOff();
-          return;
-        }
+        if (mode===State.MENU || mode===State.CONFIRM){ abortMenuToOff(); return; }
         powerToggle();
-      },
-      onLong: null,
-      longMs: null,
-      progressEl: powerProgress
-    });
+      });
+    })();
 
-    // Menu button: context-sensitive thresholds
-    function refreshMenuHandlers() {
-      // Remove existing listeners by cloning (simplest way to reset handlers safely)
-      const newBtn = btnMenu.cloneNode(true);
-      btnMenu.parentNode.replaceChild(newBtn, btnMenu);
-
-      const progress = newBtn.querySelector('.progress > span');
-
-      if (powerOn && mode === State.RUN) {
-        // RUN: Long (≥5s) enters menu; short triggers preview
-        attachPressHandlers(newBtn, {
-          onShort: () => previewPreferred(),
-          onLong: () => enterMenu(),
-          longMs: MENU_ENTER_HOLD_MS,
-          progressEl: progress,
-        });
-      } else if (powerOn && mode === State.MENU) {
-        // MENU: Long (≥1s) confirms; short cycles
-        attachPressHandlers(newBtn, {
-          onShort: () => cycleCandidate(),
-          onLong: () => confirmSelection(),
-          longMs: MENU_CONFIRM_HOLD_MS,
-          progressEl: progress,
-        });
-      } else {
-        // Other modes (OFF/BOOT/CONFIRM/PREVIEW): ignore short; no long
-        attachPressHandlers(newBtn, {
-          onShort: () => { /* no-op */ },
-          onLong: null,
-          longMs: null,
-          progressEl: progress,
-        });
-      }
-
-      // Rebind IDs
-      window.btnMenu = newBtn;
-    }
-
-    // Observe mode changes to rebind menu behavior
-    const modeObserver = new MutationObserver(() => refreshMenuHandlers());
-    modeObserver.observe(modeStateEl, { childList: true });
-
-    // Initialize view
-    setLED(HEX.Green, false);
-    setLEDStatusLabel('Off');
-    updateLabels();
-    refreshMenuHandlers();
-
+    // =============================
+    //  Init
+    // =============================
+    setLED(HEX.Green,false); setLEDStatusLabel('Off'); updateLabels();
+    menuHintEl.textContent = 'Hold 5s to enter menu (when On)';
   </script>
 </body>
 </html>
